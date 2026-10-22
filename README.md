@@ -1,97 +1,158 @@
-# PTPE 
+# PTPE-RP2350 — Wi-Fi Skylanders Portal
 
-If you want to support this Project, feel free to do so on [Ko-Fi](https://ko-fi.com/nicoaicp)
+An experimental RP2350 adaptation of **PTPE**, originally developed by [NicoAICP](https://github.com/NicoAICP/PTPE).
 
-Also join the Discord [here](https://discord.gg/zx6RAAw7YJ)!
+This version explores using a Raspberry Pi Pico 2 W as a virtual Skylanders Portal, with Wi-Fi access for uploading Skylanders dump files and USB HID emulation.
 
-## Building under Windows using WSL
+> **Development status:** The firmware builds successfully, the Wi-Fi access point and web upload have been tested on the Pico 2 W, and Windows recognizes the device as USB HID. Communication with an Xbox 360 has not yet been validated.
 
- - Make sure to have Virtualisation enabled
+## Credits and original project
 
- - Activate WSL
-   
-    System Control Panel -> Programs and Features -> Activate/Deactivate Windows Features -> Activate Windows Subsystem for Linux
+This project is based on [NicoAICP/PTPE](https://github.com/NicoAICP/PTPE).
 
- - Open Powershell and enter
-    wsl --install
+The original project provides the foundation for the portal emulation code and related functionality. This repository contains experimental adaptations for the RP2350, including Wi-Fi access, a web interface, and RAM-based dump loading.
 
- - Reboot your computer
+- **Original project:** [NicoAICP/PTPE](https://github.com/NicoAICP/PTPE)
+- **Original developer:** [NicoAICP](https://github.com/NicoAICP)
+- **Original project support:** [Ko-Fi](https://ko-fi.com/nicoaicp)
+- **Original project Discord:** [Join the Discord](https://discord.gg/zx6RAAw7YJ)
 
- - Go into the Microsoft Store and Get Ubuntu
+This is an independent development repository, not an official release of the original project.
 
- - Open Ubuntu
+Please refer to the included `LICENSE` file for the applicable license terms.
 
- - Setup Ubuntu
+## Features
 
- - Exit Ubuntu
+- Raspberry Pi Pico 2 W / RP2350 target.
+- Wi-Fi access point hosted by the Pico.
+- Browser-based interface for uploading Skylanders dump files.
+- RAM-based storage for the currently uploaded dump.
+- USB HID device enumeration.
+- Experimental integration with the existing PTPE portal emulation code.
 
- - Open Powershell and enter
-    wsl --set-version Ubuntu 1
+## Current development status
 
- - Open Ubuntu and do following steps:
+| Feature | Status |
+|---|---|
+| Firmware compilation | Confirmed |
+| Wi-Fi access point | Tested on hardware |
+| Web interface | Tested from a phone |
+| Skylanders dump upload | Tested with `Spyro.bin` (1024 bytes) |
+| Dump stored in RAM | Confirmed by web interface |
+| USB HID enumeration on Windows | Confirmed |
+| USB report protocol | Not yet fully validated |
+| Xbox 360 compatibility | Not yet tested |
+| Full Skylanders read/write support | Not confirmed |
 
-    > sudo apt-get update
-    > 
-    > sudo apt-get upgrade
-    > 
-    > sudo apt-get install doxygen
-    > 
-    > sudo apt-get install g++
-    > 
-    > sudo apt-get install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
-    > 
-    > cd [Path of your Development Folder]
-    >
-    > 
-    > git clone https://github.com/raspberrypi/pico-sdk
-    > 
-    > cd pico-sdk
-    > 
-    > git submodule update --init
-    > 
-    > cd ..
-    > 
-    > git clone https://github.com/NicoAICP/PTPE.git
-    > 
-    > cd PTPE
-    >
-    > git checkout rp2350-sdk2.0
-    > 
-    > git submodule update --init --recursive
+## Using the Wi-Fi interface
 
- - Now in your File Explorer do following things:
-   
-    In the PTPE repository please copy the tusb_config.h file to [Path of your Development Folder]\pico-sdk\lib\tinyusb\src\tusb_config.h
+1. Power the Pico 2 W with the firmware running.
+2. Connect your phone or computer to the following Wi-Fi network:
 
- - Go back to the WSL/Ubuntu Windows
+   - **SSID:** `PTPE-Skylanders`
+   - **Password:** `SkyPortal26`
 
- - Run the build script for the platform you want to compile for. if using build_all.sh it builds for all platforms.
+3. Open the following address in a browser:
 
-## Connecting the LCD:
-SCK -> GP14 (Pin 19)  
-SDA -> GP15 (Pin 20)  
-A0 -> GP10 (Pin 14)  
-RESET -> GP11 (Pin 15)  
-CS -> GP9 (Pin 12)  
-LED -> 3.3V (Pin 36)  
-GND -> GND (Pin 38)  
-VCC -> 5V (Pin 40)
+   `http://192.168.4.1`
 
-## Connecting a SD Card Reader
-SD_CS -> GP5 (Pin 7)  
-SD_MOSI -> GP3 (Pin 5)  
-SD_MISO -> GP4 (Pin 6)  
-SD_SCK -> GP2 (Pin 4)  
-  
-## Connecting the Buttons  
-You will be needing 5 Buttons  
-- Button1 (Misc 1)  
-GP16 (Pin 21)  
-- Button2 (Left/Down)  
-GP17 (Pin 22)  
-- Button3 (Select)  
-GP18 (Pin 24)  
-- Button4 (Right/Up)  
-GP19 (Pin 25)  
-- Button5 (Misc 2)  
-GP20 (Pin 26)
+4. Upload a Skylanders dump file (`.bin`).
+
+The current firmware accepts one dump at a time. The dump must be between 16 and 2048 bytes, inclusive, and its size must be a multiple of 16 bytes.
+
+The dump is held in RAM, so it must be uploaded again after a restart or power loss.
+
+These are the current development defaults and may change in future versions.
+
+## Building the firmware
+
+### Requirements
+
+- Raspberry Pi Pico SDK
+- CMake
+- Ninja or another supported CMake build generator
+- ARM GNU Toolchain for `arm-none-eabi`
+- A compatible C/C++ build environment
+- The repository's required Git submodules
+
+### Getting the source
+
+Clone this repository and initialize its submodules:
+
+```bash
+git clone https://github.com/RobertoWaide/PTPE-RP2350.git
+cd PTPE-RP2350
+git submodule update --init --recursive
+```
+
+Set `PICO_SDK_PATH` to the location of your Raspberry Pi Pico SDK installation.
+
+Make sure the TinyUSB configuration required by this project is installed as described in the original PTPE build instructions.
+
+### Building with CMake and Ninja
+
+From the repository root, configure the build for the Pico 2 W:
+
+```bash
+cmake -S . -B build-ninja -G Ninja -DPICO_BOARD=pico2_w
+```
+
+Then build:
+
+```bash
+cmake --build build-ninja -j 4
+```
+
+The generated UF2 firmware should be located at:
+
+`build-ninja/ptpe.uf2`
+
+The exact build requirements may vary depending on your operating system and SDK/toolchain setup. The commands above describe the current CMake/Ninja workflow; a clean build on a separate machine should be verified.
+
+## Hardware connections
+
+The following connections are documented by the original PTPE project. Their functionality has not necessarily been verified with the current Wi-Fi development firmware.
+
+### LCD
+
+| Signal | Pico GPIO / Pin |
+|---|---|
+| SCK | GP14 / Pin 19 |
+| SDA | GP15 / Pin 20 |
+| A0 | GP10 / Pin 14 |
+| RESET | GP11 / Pin 15 |
+| CS | GP9 / Pin 12 |
+| LED | 3.3V / Pin 36 |
+| GND | GND / Pin 38 |
+| VCC | 5V / Pin 40 |
+
+### SD card reader
+
+| Signal | Pico GPIO / Pin |
+|---|---|
+| SD_CS | GP5 / Pin 7 |
+| SD_MOSI | GP3 / Pin 5 |
+| SD_MISO | GP4 / Pin 6 |
+| SD_SCK | GP2 / Pin 4 |
+
+### Buttons
+
+Five buttons are documented by the original project:
+
+| Button | Function | Pico GPIO / Pin |
+|---|---|---|
+| Button 1 | Misc 1 | GP16 / Pin 21 |
+| Button 2 | Left / Down | GP17 / Pin 22 |
+| Button 3 | Select | GP18 / Pin 24 |
+| Button 4 | Right / Up | GP19 / Pin 25 |
+| Button 5 | Misc 2 | GP20 / Pin 26 |
+
+## Known limitations
+
+- The current development firmware starts the Wi-Fi portal interface directly.
+- The current upload implementation keeps one dump in RAM; it is not a collection manager.
+- Uploading a dump and detecting the Pico as a USB HID device do not, by themselves, prove that the Skylanders protocol works correctly.
+- Xbox 360 communication and actual in-game Skylanders detection remain to be tested.
+- Full portal functionality, including all original LCD, SD card, button, and game interaction features, has not been validated in this configuration.
+
+## Contributing and
