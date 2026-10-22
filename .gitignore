@@ -6,3 +6,8 @@ build_rp2350
 .vscode/.cortex-debug.peripherals.state.json
 .vscode/.cortex-debug.registers.state.json
 TODO
+
+# Local build output and development backups
+/build-ninja/
+*.backup*
+build-log*.txt

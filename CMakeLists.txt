@@ -58,7 +58,12 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
 endif()
 add_subdirectory(libs/FatFS_SPI/src build)
-add_executable(${PROJECT_NAME} src/main.c src/shared.c src/menu.c  src/usb_descriptors.c src/Skylanders.c src/sdmenu.c src/hw_config.c ) #
+add_executable(${PROJECT_NAME} src/main.c src/shared.c src/menu.c  src/usb_descriptors.c src/Skylanders.c src/sdmenu.c src/hw_config.c src/web_server.c src/dhcpserver/dhcpserver.c ) #
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/src/dhcpserver
+    ${CMAKE_CURRENT_LIST_DIR}/src
+    ${CMAKE_CURRENT_LIST_DIR}
+)
 
 pico_enable_stdio_uart(${PROJECT_NAME} 1)
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
@@ -71,6 +76,7 @@ add_subdirectory(libs/pico-st7735)
 
 # add libraries
 target_link_libraries(${PROJECT_NAME}
+    pico_cyw43_arch_lwip_threadsafe_background
   pico_stdlib tinyusb_device tinyusb_board hardware_i2c hardware_gpio
   hardware_spi
   st7735

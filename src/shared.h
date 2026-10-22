@@ -17,3 +17,8 @@ extern FIL *loaded_skylanders[MAX_SKYLANDER_COUNT];
 
 void reboot();
 
+
+// Dump de Skylander carregado em RAM pela interface web.
+extern unsigned char skylander_ram_dump[2048];
+extern unsigned int skylander_ram_dump_size;
+extern int skylander_ram_dump_active;

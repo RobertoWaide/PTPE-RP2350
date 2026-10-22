@@ -1,0 +1,233 @@
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include "pico/stdlib.h"
+#include "pico/cyw43_arch.h"
+#include "lwip/tcp.h"
+#include "lwip/ip4_addr.h"
+#include "lwip/netif.h"
+#include "lwip/mem.h"
+#include "dhcpserver.h"
+#include "shared.h"
+
+#define REQ_MAX 4096
+#define DUMP_MAX 2048
+#define RESP_MAX 1200
+
+typedef struct {
+    uint8_t req[REQ_MAX];
+    size_t used, header_end, body_len;
+    bool has_len, bad, responded;
+} http_client_t;
+
+static dhcp_server_t dhcp;
+static struct tcp_pcb *listener;
+
+static const char page[] =
+"<!doctype html><html lang='pt-BR'><meta charset='utf-8'>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<title>PTPE Skylanders</title><style>body{font:16px system-ui;max-width:600px;margin:2em auto;padding:0 1em;background:#101522;color:#eee}button{padding:12px;background:#54d6a0;border:0;border-radius:8px}input{margin:1em 0}#s{white-space:pre-wrap}</style>"
+"<h1>PTPE Skylanders</h1><p>Choose a .bin dump (up to 2048 bytes).</p>"
+"<input id=f type=file accept='.bin'><br><button id=b>Enviar e ativar</button><p id=s>Waiting for a file.</p>"
+"<script>let f=document.querySelector('#f'),s=document.querySelector('#s');document.querySelector('#b').onclick=async()=>{let x=f.files[0];if(!x){s.textContent='Choose a file.';return}if(!x.size||x.size>2048||x.size%16!==0){s.textContent='Invalid size.';return}s.textContent='Uploading...';try{let r=await fetch('/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:x});s.textContent=await r.text()}catch(e){s.textContent='Failed: '+e}}</script>";
+
+static void cleanup(struct tcp_pcb *pcb, http_client_t *c, bool abort_conn) {
+    if (pcb) {
+        tcp_arg(pcb, NULL);
+        tcp_recv(pcb, NULL);
+        tcp_sent(pcb, NULL);
+        tcp_poll(pcb, NULL, 0);
+        tcp_err(pcb, NULL);
+        if (abort_conn) tcp_abort(pcb);
+        else if (tcp_close(pcb) != ERR_OK) tcp_abort(pcb);
+    }
+    if (c) free(c);
+}
+
+static err_t respond(struct tcp_pcb *pcb, http_client_t *c,
+                     const char *status, const char *type,
+                     const void *body, size_t body_len) {
+    uint8_t out[RESP_MAX];
+    int h = snprintf((char *)out, sizeof(out),
+        "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
+        "Connection: close\r\nCache-Control: no-store\r\n\r\n",
+        status, type, (unsigned long)body_len);
+    if (h < 0 || (size_t)h >= sizeof(out) ||
+        body_len > sizeof(out) - (size_t)h) return ERR_VAL;
+    if (body_len && body) memcpy(out + h, body, body_len);
+
+    err_t e = tcp_write(pcb, out, (u16_t)((size_t)h + body_len), TCP_WRITE_FLAG_COPY);
+    if (e != ERR_OK) return e;
+    e = tcp_output(pcb);
+    if (e != ERR_OK && e != ERR_MEM) return e;
+
+    /* Responses are small and queued before closing. */
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_sent(pcb, NULL);
+    tcp_poll(pcb, NULL, 0);
+    tcp_err(pcb, NULL);
+    e = tcp_close(pcb);
+    if (e != ERR_OK) tcp_abort(pcb);
+    free(c);
+    return ERR_OK;
+}
+
+static bool eq_ci(const char *a, size_t n, const char *b) {
+    size_t m = strlen(b);
+    if (n != m) return false;
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+    return true;
+}
+
+static void parse_request(http_client_t *c) {
+    char *s = (char *)c->req;
+    char *line_end = strstr(s, "\r\n");
+    if (!line_end) { c->bad = true; return; }
+    size_t req_len = (size_t)(line_end - s);
+    bool get_root = req_len >= 6 && memcmp(s, "GET / ", 6) == 0;
+    bool post_upload = req_len >= 13 && memcmp(s, "POST /upload ", 13) == 0;
+    if (get_root) { c->body_len = (size_t)-1; return; }
+    if (!post_upload) { c->bad = true; return; }
+
+    char *line = line_end + 2;
+    char *limit = (char *)c->req + c->header_end - 2;
+    while (line < limit) {
+        char *end = strstr(line, "\r\n");
+        if (!end || end > limit) { c->bad = true; return; }
+        char *colon = memchr(line, ':', (size_t)(end - line));
+        if (colon && eq_ci(line, (size_t)(colon-line), "Content-Length")) {
+            char *v = colon + 1;
+            while (v < end && (*v == ' ' || *v == '\t')) v++;
+            if (v == end || !isdigit((unsigned char)*v) || c->has_len) { c->bad = true; return; }
+            unsigned long n = 0;
+            while (v < end && isdigit((unsigned char)*v)) {
+                n = n * 10UL + (unsigned long)(*v - '0');
+                if (n > DUMP_MAX) { c->bad = true; return; }
+                v++;
+            }
+            while (v < end && (*v == ' ' || *v == '\t')) v++;
+            if (v != end || n < 16 || n % 16 != 0) { c->bad = true; return; }
+            c->body_len = (size_t)n;
+            c->has_len = true;
+        }
+        line = end + 2;
+    }
+    if (!c->has_len) c->bad = true;
+}
+
+static err_t recv_http(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
+    http_client_t *c = (http_client_t *)arg;
+    if (!c) { if (p) pbuf_free(p); return ERR_ARG; }
+    if (err != ERR_OK) { if (p) pbuf_free(p); cleanup(pcb, c, true); return err; }
+    if (!p) { cleanup(pcb, c, false); return ERR_OK; }
+    tcp_recved(pcb, p->tot_len);
+
+    if ((size_t)p->tot_len > sizeof(c->req) - c->used) {
+        pbuf_free(p);
+        static const char msg[] = "Request too large.";
+        if (respond(pcb, c, "413 Payload Too Large", "text/plain", msg, sizeof(msg)-1) != ERR_OK)
+            cleanup(pcb, c, true);
+        return ERR_OK;
+    }
+    pbuf_copy_partial(p, c->req + c->used, p->tot_len, 0);
+    c->used += p->tot_len;
+    pbuf_free(p);
+    if (c->responded) return ERR_OK;
+
+    if (!c->header_end) {
+        for (size_t i = 3; i < c->used; i++) {
+            if (c->req[i-3]=='\r' && c->req[i-2]=='\n' &&
+                c->req[i-1]=='\r' && c->req[i]=='\n') {
+                c->header_end = i + 1;
+                break;
+            }
+        }
+        if (!c->header_end) {
+            if (c->used == sizeof(c->req)) {
+                static const char msg[] = "HTTP headers too large.";
+                if (respond(pcb, c, "431 Request Header Fields Too Large", "text/plain", msg, sizeof(msg)-1) != ERR_OK)
+                    cleanup(pcb, c, true);
+            }
+            return ERR_OK;
+        }
+        /* Terminate header text at the start of the final CRLFCRLF. */
+        c->req[c->header_end - 2] = '\0';
+        parse_request(c);
+        if (c->bad) {
+            static const char msg[] = "Invalid request or Content-Length.";
+            if (respond(pcb, c, "400 Bad Request", "text/plain", msg, sizeof(msg)-1) != ERR_OK)
+                cleanup(pcb, c, true);
+            return ERR_OK;
+        }
+        if (c->body_len == (size_t)-1) {
+            if (respond(pcb, c, "200 OK", "text/html; charset=utf-8", page, sizeof(page)-1) != ERR_OK)
+                cleanup(pcb, c, true);
+            return ERR_OK;
+        }
+    }
+
+    if (c->header_end && c->has_len) {
+        size_t got = c->used - c->header_end;
+        if (got > c->body_len) {
+            static const char msg[] = "Invalid upload length.";
+            if (respond(pcb, c, "400 Bad Request", "text/plain", msg, sizeof(msg)-1) != ERR_OK)
+                cleanup(pcb, c, true);
+            return ERR_OK;
+        }
+        if (got == c->body_len) {
+            memcpy(skylander_ram_dump, c->req + c->header_end, c->body_len);
+            skylander_ram_dump_size = (unsigned int)c->body_len;
+            skylander_ram_dump_active = 1;
+
+            char msg[80];
+            int n = snprintf(msg, sizeof(msg), "Dump active in RAM (%lu bytes).", (unsigned long)c->body_len);
+            if (n < 0) n = 0;
+            if ((size_t)n >= sizeof(msg)) n = (int)sizeof(msg)-1;
+            if (respond(pcb, c, "200 OK", "text/plain; charset=utf-8", msg, (size_t)n) != ERR_OK)
+                cleanup(pcb, c, true);
+        }
+    }
+    return ERR_OK;
+}
+
+static void err_http(void *arg, err_t err) {
+    (void)err;
+    if (arg) free(arg);
+}
+
+static err_t accept_http(void *arg, struct tcp_pcb *pcb, err_t err) {
+    (void)arg;
+    if (err != ERR_OK || !pcb) return ERR_VAL;
+    http_client_t *c = (http_client_t *)calloc(1, sizeof(*c));
+    if (!c) { tcp_abort(pcb); return ERR_ABRT; }
+    tcp_arg(pcb, c);
+    tcp_recv(pcb, recv_http);
+    tcp_err(pcb, err_http);
+    return ERR_OK;
+}
+
+void ptpe_web_start(void) {
+    ip4_addr_t ip, mask, gw;
+    IP4_ADDR(&ip, 192, 168, 4, 1);
+    IP4_ADDR(&mask, 255, 255, 255, 0);
+    IP4_ADDR(&gw, 192, 168, 4, 1);
+    cyw43_arch_enable_ap_mode("PTPE-Skylanders", "SkyPortal26", CYW43_AUTH_WPA2_AES_PSK);
+    netif_set_addr(&cyw43_state.netif[CYW43_ITF_AP], &ip, &mask, &gw);
+    dhcp_server_init(&dhcp, &cyw43_state.netif[CYW43_ITF_AP], &gw, &mask);
+
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    if (!pcb) { printf("PTPE web: tcp_new falhou\n"); return; }
+    if (tcp_bind(pcb, IP_ADDR_ANY, 80) != ERR_OK) {
+        printf("PTPE web: tcp_bind falhou\n");
+        tcp_close(pcb);
+        return;
+    }
+    listener = tcp_listen_with_backlog(pcb, 2);
+    if (!listener) { printf("PTPE web: listen falhou\n"); return; }
+    tcp_accept(listener, accept_http);
+    printf("Wi-Fi PTPE-Skylanders / password SkyPortal26 / http://192.168.4.1\n");
+}

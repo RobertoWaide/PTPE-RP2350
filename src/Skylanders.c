@@ -1,3 +1,5 @@
+#include <stdlib.h>
+#include "Skylanders.h"
 #include "menu.h"
 #include "hw.h"
 #include "shared.h"
