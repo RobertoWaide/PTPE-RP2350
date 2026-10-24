@@ -198,6 +198,19 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
   return 0;
 }
 
+// Xbox 360 Traptanium reports wrap the portal payload in 0B 14.
+static void portal_send_report(const uint8_t *payload, uint16_t payload_len)
+{
+    uint8_t report[32] = {0};
+    report[0] = 0x0B;
+    report[1] = 0x14;
+    if (payload != NULL && payload_len > 0) {
+        uint16_t copy_len = payload_len > 30 ? 30 : payload_len;
+        memcpy(report + 2, payload, copy_len);
+    }
+    tud_hid_report(0, report, sizeof(report));
+}
+
 // Invoked when received SET_REPORT control request or
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) // Console/ Computer sends data (Query, Shutdown etc.)
@@ -216,67 +229,73 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
  printf("%X", report_type);
  if (report_type == HID_REPORT_TYPE_OUTPUT)
   {
+    const uint8_t *command_buffer = buffer;
+    uint16_t command_len = bufsize;
+    if (bufsize >= 3 && buffer[0] == 0x0B && buffer[1] == 0x14) {
+        command_buffer = buffer + 2;
+        command_len = (uint16_t)(bufsize - 2);
+    }
     // char paddedbuffer[MSG_SIZE] = {0};
     char *outbuffer;
     char *midbuffer;
     FIL *curfile;
     uint actual_len = 0;
 
-    switch (buffer[0]) // Commands we can recieve from the host
+    switch (command_buffer[0]) // Commands we can recieve from the host
     {
         case 'R': // 0x52 Reboot/Shutdown Portal
             printf("Recieved reboot\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outbuffer[0] = 0x52;
-            outbuffer[1] = 0x02;
+            outcommand_buffer[0] = 0x52;
+            outcommand_buffer[1] = 0x02;
             // Xbox 360 Traptanium Portal identification response: 52 02 1B.
             // 52 02 0A 05 08 is a different protocol response, not this portal ID.
-            outbuffer[2] = 0x1B;
-            tud_hid_report(0, outbuffer, 32);
+            outcommand_buffer[2] = 0x1B;
+            portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'J':
             printf("I do not know what it does but something related to sound");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outbuffer[0] = buffer[0];
-            tud_hid_report(0, outbuffer, 32);
+            outcommand_buffer[0] = command_buffer[0];
+            portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'M':
             printf("Activate / Deactivate speaker");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outbuffer[0] = buffer[0]; // We only send the command back without any return value, since we do not have a speaker
-            tud_hid_report(0, outbuffer, 32);
+            outcommand_buffer[0] = command_buffer[0]; // We only send the command back without any return value, since we do not have a speaker
+            portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'A': // 0x41 Activate Portal
-            if (bufsize < 2) return;
+            if (command_len < 2) return;
 
             printf("Recieved activate\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outbuffer[0] = 0x41;
-            outbuffer[1] = buffer[1];
-            outbuffer[2] = 0xff;
-            outbuffer[3] = 0x77;
-            tud_hid_report(0, outbuffer, 32);
+            outcommand_buffer[0] = 0x41;
+            outcommand_buffer[1] = command_buffer[1];
+            outcommand_buffer[2] = 0xff;
+            outcommand_buffer[3] = 0x77;
+            portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'S': // 0x53 Sense how many Skylanders are on the Portal
             printf("Recieved sense\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outbuffer[0] = 0x53;
-            outbuffer[1] = (web_sense_present ||
+            outcommand_buffer[0] = 0x53;
+            outcommand_buffer[1] = (web_sense_present ||
                 (skylander_ram_dump_active &&
                  skylander_ram_dump_size >= SKYLANDER_BLOCK_SIZE &&
                  skylander_ram_dump_size <= sizeof(skylander_ram_dump) &&
                  skylander_ram_dump_size % SKYLANDER_BLOCK_SIZE == 0))
                ? 0x01
                : create_sense_bitmask(loaded_skylanders, MAX_SKYLANDER_COUNT);
-            // pseudo: outbuffer[2:5] = {0x00} (len = 3)
-            outbuffer[5] = sense_counter++;
-            outbuffer[6] = 0x01;
-            tud_hid_report(0, outbuffer, 32);
+            // pseudo: outcommand_buffer[2:5] = {0x00} (len = 3)
+            outcommand_buffer[5] = sense_counter++;
+            outcommand_buffer[6] = 0x01;
+            portal_send_report((const uint8_t *)outbuffer, 32);
             // free(outbuffer);
             break;
         case 'C': // 0x42 Skylander Portal Color
@@ -286,26 +305,26 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             // tud_hid_report(0, buffer, bufsize);
             break;
         case 'Q': // 0x51 Read Blocks (16 Bytes) From Skylander
-            if (bufsize < 3) return;
+            if (command_len < 3) return;
             printf("Recieved query\n");
             outbuffer = calloc(SKYLANDER_MSG_SIZE, 1);
             if (outbuffer == NULL) { return; }
-            outbuffer[0] = 0x51;
-            outbuffer[1] = 0x10;
-            if(buffer[1] == 0x10 || buffer[1] == 0x20 || buffer[1] == 0x30 || buffer[1] == 0x40 || buffer[1] == 0x50 || buffer[1] == 0x60 || buffer[1] == 0x70 || buffer[1] == 0x80 || buffer[1] == 0x90 || buffer[1] == 0xA0 || buffer[1] == 0xB0 || buffer[1] == 0xC0 || buffer[1] == 0xD0 || buffer[1] == 0xE0 || buffer[1] == 0xF0)
+            outcommand_buffer[0] = 0x51;
+            outcommand_buffer[1] = 0x10;
+            if(command_buffer[1] == 0x10 || command_buffer[1] == 0x20 || command_buffer[1] == 0x30 || command_buffer[1] == 0x40 || command_buffer[1] == 0x50 || command_buffer[1] == 0x60 || command_buffer[1] == 0x70 || command_buffer[1] == 0x80 || command_buffer[1] == 0x90 || command_buffer[1] == 0xA0 || command_buffer[1] == 0xB0 || command_buffer[1] == 0xC0 || command_buffer[1] == 0xD0 || command_buffer[1] == 0xE0 || command_buffer[1] == 0xF0)
             {
-                outbuffer[1] = 0x10;
+                outcommand_buffer[1] = 0x10;
             }
-            if(buffer[1] == 0x11 || buffer[1] == 0x21 || buffer[1] == 0x31 || buffer[1] == 0x41 || buffer[1] == 0x51 || buffer[1] == 0x61 || buffer[1] == 0x71 || buffer[1] == 0x81 || buffer[1] == 0x91 || buffer[1] == 0xA1 || buffer[1] == 0xB1 || buffer[1] == 0xC1 || buffer[1] == 0xD1 || buffer[1] == 0xE1 || buffer[1] == 0xF1)
+            if(command_buffer[1] == 0x11 || command_buffer[1] == 0x21 || command_buffer[1] == 0x31 || command_buffer[1] == 0x41 || command_buffer[1] == 0x51 || command_buffer[1] == 0x61 || command_buffer[1] == 0x71 || command_buffer[1] == 0x81 || command_buffer[1] == 0x91 || command_buffer[1] == 0xA1 || command_buffer[1] == 0xB1 || command_buffer[1] == 0xC1 || command_buffer[1] == 0xD1 || command_buffer[1] == 0xE1 || command_buffer[1] == 0xF1)
             {
-                outbuffer[1] = 0x11;
+                outcommand_buffer[1] = 0x11;
             }
-            if (buffer[1] == 0x12 || buffer[1] == 0x22 || buffer[1] == 0x32 || buffer[1] == 0x42 || buffer[1] == 0x52 || buffer[1] == 0x62 || buffer[1] == 0x72 || buffer[1] == 0x82 || buffer[1] == 0x92 || buffer[1] == 0xA2 || buffer[1] == 0xB2 || buffer[1] == 0xC2 || buffer[1] == 0xD2 || buffer[1] == 0xE2 || buffer[1] == 0xF2)
+            if (command_buffer[1] == 0x12 || command_buffer[1] == 0x22 || command_buffer[1] == 0x32 || command_buffer[1] == 0x42 || command_buffer[1] == 0x52 || command_buffer[1] == 0x62 || command_buffer[1] == 0x72 || command_buffer[1] == 0x82 || command_buffer[1] == 0x92 || command_buffer[1] == 0xA2 || command_buffer[1] == 0xB2 || command_buffer[1] == 0xC2 || command_buffer[1] == 0xD2 || command_buffer[1] == 0xE2 || command_buffer[1] == 0xF2)
             {
-                outbuffer[1] = 0x12;
+                outcommand_buffer[1] = 0x12;
             }
       
-            outbuffer[2] = buffer[2];
+            outcommand_buffer[2] = command_buffer[2];
 
             midbuffer = calloc(SKYLANDER_BLOCK_SIZE, 1);
             if (midbuffer == NULL) {
@@ -322,7 +341,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
                     return;
                 }
 
-                unsigned int offset = (unsigned int)buffer[2] * SKYLANDER_BLOCK_SIZE;
+                unsigned int offset = (unsigned int)command_buffer[2] * SKYLANDER_BLOCK_SIZE;
                 if (offset + SKYLANDER_BLOCK_SIZE > skylander_ram_dump_size) {
                     free(midbuffer);
                     free(outbuffer);
@@ -336,7 +355,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
                     free(outbuffer);
                     return;
                 }
-                FRESULT fr = f_lseek(curfile, (FSIZE_t)buffer[2] * SKYLANDER_BLOCK_SIZE);
+                FRESULT fr = f_lseek(curfile, (FSIZE_t)command_buffer[2] * SKYLANDER_BLOCK_SIZE);
                 if (fr != FR_OK) {
                     free(midbuffer);
                     free(outbuffer);
@@ -353,14 +372,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 
             memcpy(outbuffer + 3, midbuffer, SKYLANDER_BLOCK_SIZE);
             free(midbuffer);
-tud_hid_report(0, outbuffer, SKYLANDER_MSG_SIZE);
+portal_send_report((const uint8_t *)outbuffer, SKYLANDER_MSG_SIZE);
             break;
         default:
             return;
     }
 
     printf("Sent: ");
-    for (unsigned int i = 0; i < SKYLANDER_MSG_SIZE; i++) { printf("%02X", (unsigned char)outbuffer[i]); }
+    for (unsigned int i = 0; i < SKYLANDER_MSG_SIZE; i++) { printf("%02X", (unsigned char)outcommand_buffer[i]); }
     printf("\n");
     free(outbuffer);
   }
