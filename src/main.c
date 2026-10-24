@@ -58,7 +58,9 @@ static uint8_t portal_report_cache[PORTAL_USB_REPORT_SIZE] = {0x0B, 0x14};
 static uint8_t portal_report_queue[PORTAL_REPORT_QUEUE_DEPTH][PORTAL_USB_REPORT_SIZE];
 static uint8_t portal_report_head = 0;
 static uint8_t portal_report_count = 0;
+#if PTPE_USB_DIAGNOSTICS
 static uint32_t portal_reports_dropped = 0;
+#endif
 
 static void portal_flush_reports(void);
 static void portal_send_report(const uint8_t *payload, uint16_t payload_len);
@@ -76,9 +78,11 @@ static void portal_send_report(const uint8_t *payload, uint16_t payload_len)
     }
 
     if (portal_report_count >= PORTAL_REPORT_QUEUE_DEPTH) {
+#if PTPE_USB_DIAGNOSTICS
         ++portal_reports_dropped;
         USB_DIAG("USB: response queue full; dropped=%lu\n",
                  (unsigned long)portal_reports_dropped);
+#endif
         return;
     }
 
@@ -288,6 +292,8 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) // Console/ Computer sends data (Query, Shutdown etc.)
 {
+ (void)instance;
+ (void)report_id;
  USB_DIAG("USB: SET_REPORT instance=%u id=0x%02X type=%u len=%u",
         instance, report_id, (unsigned)report_type, bufsize);
  if (buffer != NULL) {
