@@ -267,10 +267,11 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
             outbuffer[0] = 0x53;
-            outbuffer[1] = (skylander_ram_dump_active &&
-                skylander_ram_dump_size >= SKYLANDER_BLOCK_SIZE &&
-                skylander_ram_dump_size <= sizeof(skylander_ram_dump) &&
-                skylander_ram_dump_size % SKYLANDER_BLOCK_SIZE == 0)
+            outbuffer[1] = (web_sense_present ||
+                (skylander_ram_dump_active &&
+                 skylander_ram_dump_size >= SKYLANDER_BLOCK_SIZE &&
+                 skylander_ram_dump_size <= sizeof(skylander_ram_dump) &&
+                 skylander_ram_dump_size % SKYLANDER_BLOCK_SIZE == 0))
                ? 0x01
                : create_sense_bitmask(loaded_skylanders, MAX_SKYLANDER_COUNT);
             // pseudo: outbuffer[2:5] = {0x00} (len = 3)
