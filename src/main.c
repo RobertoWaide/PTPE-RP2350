@@ -202,7 +202,14 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) // Console/ Computer sends data (Query, Shutdown etc.)
 {
- printf("USB: SET_REPORT instance=%u id=0x%02X type=%u len=%u",\n        instance, report_id, (unsigned)report_type, bufsize);\n if (buffer != NULL) {\n   unsigned int dump_len = bufsize < 32 ? bufsize : 32;\n   for (unsigned int i = 0; i < dump_len; i++) printf(" %02X", buffer[i]);\n }\n printf("\\n");\n if (report_type == HID_REPORT_TYPE_OUTPUT && (buffer == NULL || bufsize < 1)) {
+ printf("USB: SET_REPORT instance=%u id=0x%02X type=%u len=%u",
+        instance, report_id, (unsigned)report_type, bufsize);
+ if (buffer != NULL) {
+   unsigned int dump_len = bufsize < 32 ? bufsize : 32;
+   for (unsigned int i = 0; i < dump_len; i++) printf(" %02X", buffer[i]);
+ }
+ printf("\n");
+ if (report_type == HID_REPORT_TYPE_OUTPUT && (buffer == NULL || bufsize < 1)) {
      printf("USB: pacote OUTPUT invalido\n");
      return;
  }
