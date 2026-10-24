@@ -21,6 +21,8 @@ typedef struct {
     size_t used, header_end, body_len;
     bool has_len, bad, responded;
     unsigned char action; /* 0=root/upload, 1=sense on, 2=sense off, 3=status */
+    uint8_t response[RESP_MAX];
+    size_t response_len, response_queued;
 } http_client_t;
 
 static dhcp_server_t dhcp;
@@ -48,33 +50,70 @@ static void cleanup(struct tcp_pcb *pcb, http_client_t *c, bool abort_conn) {
     if (c) free(c);
 }
 
+static err_t flush_response(struct tcp_pcb *pcb, http_client_t *c) {
+    while (c->response_queued < c->response_len) {
+        u16_t available = tcp_sndbuf(pcb);
+        if (available == 0) break;
+        size_t remaining = c->response_len - c->response_queued;
+        size_t chunk = remaining;
+        if (chunk > available) chunk = available;
+        if (chunk > 1024) chunk = 1024;
+
+        err_t e = tcp_write(pcb, c->response + c->response_queued,
+                            (u16_t)chunk, TCP_WRITE_FLAG_COPY);
+        if (e == ERR_MEM) break; /* tcp_sent_cb retries when ACKs free space */
+        if (e != ERR_OK) return e;
+        c->response_queued += chunk;
+    }
+
+    err_t out = tcp_output(pcb);
+    if (out != ERR_OK && out != ERR_MEM) return out;
+
+    if (c->response_queued == c->response_len) {
+        /* All bytes are queued; TCP will transmit them before FIN. */
+        tcp_arg(pcb, NULL);
+        tcp_recv(pcb, NULL);
+        tcp_sent(pcb, NULL);
+        tcp_poll(pcb, NULL, 0);
+        tcp_err(pcb, NULL);
+        err_t e = tcp_close(pcb);
+        if (e != ERR_OK) {
+            tcp_abort(pcb);
+        }
+        free(c);
+    }
+    return ERR_OK;
+}
+
+static err_t sent_http(void *arg, struct tcp_pcb *pcb, u16_t len) {
+    (void)len;
+    http_client_t *c = (http_client_t *)arg;
+    if (!c) return ERR_OK;
+    err_t e = flush_response(pcb, c);
+    if (e != ERR_OK) {
+        cleanup(pcb, c, true);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
+}
+
 static err_t respond(struct tcp_pcb *pcb, http_client_t *c,
                      const char *status, const char *type,
                      const void *body, size_t body_len) {
-    uint8_t out[RESP_MAX];
-    int h = snprintf((char *)out, sizeof(out),
-        "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
-        "Connection: close\r\nCache-Control: no-store\r\n\r\n",
+    int h = snprintf((char *)c->response, sizeof(c->response),
+        "HTTP/1.1 %s\\r\\nContent-Type: %s\\r\\nContent-Length: %lu\\r\\n"
+        "Connection: close\\r\\nCache-Control: no-store\\r\\n\\r\\n",
         status, type, (unsigned long)body_len);
-    if (h < 0 || (size_t)h >= sizeof(out) ||
-        body_len > sizeof(out) - (size_t)h) return ERR_VAL;
-    if (body_len && body) memcpy(out + h, body, body_len);
+    if (h < 0 || (size_t)h >= sizeof(c->response) ||
+        body_len > sizeof(c->response) - (size_t)h) return ERR_VAL;
+    if (body_len && body) memcpy(c->response + h, body, body_len);
+    c->response_len = (size_t)h + body_len;
+    c->response_queued = 0;
+    c->responded = true;
 
-    err_t e = tcp_write(pcb, out, (u16_t)((size_t)h + body_len), TCP_WRITE_FLAG_COPY);
-    if (e != ERR_OK) return e;
-    e = tcp_output(pcb);
-    if (e != ERR_OK && e != ERR_MEM) return e;
-
-    /* Responses are small and queued before closing. */
-    tcp_arg(pcb, NULL);
-    tcp_recv(pcb, NULL);
-    tcp_sent(pcb, NULL);
-    tcp_poll(pcb, NULL, 0);
-    tcp_err(pcb, NULL);
-    e = tcp_close(pcb);
-    if (e != ERR_OK) tcp_abort(pcb);
-    free(c);
-    return ERR_OK;
+    tcp_sent(pcb, sent_http);
+    tcp_poll(pcb, sent_http, 2);
+    return flush_response(pcb, c);
 }
 
 static bool eq_ci(const char *a, size_t n, const char *b) {
