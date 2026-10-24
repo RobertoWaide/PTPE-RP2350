@@ -112,8 +112,8 @@ static err_t respond(struct tcp_pcb *pcb, http_client_t *c,
                      const char *status, const char *type,
                      const void *body, size_t body_len) {
     int h = snprintf((char *)c->response, sizeof(c->response),
-        "HTTP/1.1 %s\\r\\nContent-Type: %s\\r\\nContent-Length: %lu\\r\\n"
-        "Connection: close\\r\\nCache-Control: no-store\\r\\n\\r\\n",
+        "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
+        "Connection: close\r\nCache-Control: no-store\r\n\r\n",
         status, type, (unsigned long)body_len);
     if (h < 0 || (size_t)h >= sizeof(c->response) ||
         body_len > sizeof(c->response) - (size_t)h) return ERR_VAL;
