@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [rp2350-wifi-upload]
   push:
-    branches: [rp2350-wifi-upload, debug/usb-protocol-instrumentation, test/xbox360-wired-portal-id, fix/portal-identification-response, fix/virtual-portal-buttons]
+    branches: [rp2350-wifi-upload, debug/usb-protocol-instrumentation, test/xbox360-wired-portal-id, fix/portal-identification-response, fix/virtual-portal-buttons, fix/xbox360-hid-queue-get-report]
   workflow_dispatch:
 
 jobs:
