@@ -97,6 +97,17 @@ static err_t sent_http(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return ERR_OK;
 }
 
+static err_t poll_http(void *arg, struct tcp_pcb *pcb) {
+    http_client_t *c = (http_client_t *)arg;
+    if (!c) return ERR_OK;
+    err_t e = flush_response(pcb, c);
+    if (e != ERR_OK) {
+        cleanup(pcb, c, true);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
+}
+
 static err_t respond(struct tcp_pcb *pcb, http_client_t *c,
                      const char *status, const char *type,
                      const void *body, size_t body_len) {
@@ -112,7 +123,7 @@ static err_t respond(struct tcp_pcb *pcb, http_client_t *c,
     c->responded = true;
 
     tcp_sent(pcb, sent_http);
-    tcp_poll(pcb, sent_http, 2);
+    tcp_poll(pcb, poll_http, 2);
     return flush_response(pcb, c);
 }
 
