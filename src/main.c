@@ -247,25 +247,25 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             printf("Recieved reboot\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outcommand_buffer[0] = 0x52;
-            outcommand_buffer[1] = 0x02;
+            outbuffer[0] = 0x52;
+            outbuffer[1] = 0x02;
             // Xbox 360 Traptanium Portal identification response: 52 02 1B.
             // 52 02 0A 05 08 is a different protocol response, not this portal ID.
-            outcommand_buffer[2] = 0x1B;
+            outbuffer[2] = 0x1B;
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'J':
             printf("I do not know what it does but something related to sound");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outcommand_buffer[0] = command_buffer[0];
+            outbuffer[0] = command_buffer[0];
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'M':
             printf("Activate / Deactivate speaker");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outcommand_buffer[0] = command_buffer[0]; // We only send the command back without any return value, since we do not have a speaker
+            outbuffer[0] = command_buffer[0]; // We only send the command back without any return value, since we do not have a speaker
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'A': // 0x41 Activate Portal
@@ -274,27 +274,27 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             printf("Recieved activate\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outcommand_buffer[0] = 0x41;
-            outcommand_buffer[1] = command_buffer[1];
-            outcommand_buffer[2] = 0xff;
-            outcommand_buffer[3] = 0x77;
+            outbuffer[0] = 0x41;
+            outbuffer[1] = command_buffer[1];
+            outbuffer[2] = 0xff;
+            outbuffer[3] = 0x77;
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'S': // 0x53 Sense how many Skylanders are on the Portal
             printf("Recieved sense\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
-            outcommand_buffer[0] = 0x53;
-            outcommand_buffer[1] = (web_sense_present ||
+            outbuffer[0] = 0x53;
+            outbuffer[1] = (web_sense_present ||
                 (skylander_ram_dump_active &&
                  skylander_ram_dump_size >= SKYLANDER_BLOCK_SIZE &&
                  skylander_ram_dump_size <= sizeof(skylander_ram_dump) &&
                  skylander_ram_dump_size % SKYLANDER_BLOCK_SIZE == 0))
                ? 0x01
                : create_sense_bitmask(loaded_skylanders, MAX_SKYLANDER_COUNT);
-            // pseudo: outcommand_buffer[2:5] = {0x00} (len = 3)
-            outcommand_buffer[5] = sense_counter++;
-            outcommand_buffer[6] = 0x01;
+            // pseudo: outbuffer[2:5] = {0x00} (len = 3)
+            outbuffer[5] = sense_counter++;
+            outbuffer[6] = 0x01;
             portal_send_report((const uint8_t *)outbuffer, 32);
             // free(outbuffer);
             break;
@@ -309,22 +309,22 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             printf("Recieved query\n");
             outbuffer = calloc(SKYLANDER_MSG_SIZE, 1);
             if (outbuffer == NULL) { return; }
-            outcommand_buffer[0] = 0x51;
-            outcommand_buffer[1] = 0x10;
+            outbuffer[0] = 0x51;
+            outbuffer[1] = 0x10;
             if(command_buffer[1] == 0x10 || command_buffer[1] == 0x20 || command_buffer[1] == 0x30 || command_buffer[1] == 0x40 || command_buffer[1] == 0x50 || command_buffer[1] == 0x60 || command_buffer[1] == 0x70 || command_buffer[1] == 0x80 || command_buffer[1] == 0x90 || command_buffer[1] == 0xA0 || command_buffer[1] == 0xB0 || command_buffer[1] == 0xC0 || command_buffer[1] == 0xD0 || command_buffer[1] == 0xE0 || command_buffer[1] == 0xF0)
             {
-                outcommand_buffer[1] = 0x10;
+                outbuffer[1] = 0x10;
             }
             if(command_buffer[1] == 0x11 || command_buffer[1] == 0x21 || command_buffer[1] == 0x31 || command_buffer[1] == 0x41 || command_buffer[1] == 0x51 || command_buffer[1] == 0x61 || command_buffer[1] == 0x71 || command_buffer[1] == 0x81 || command_buffer[1] == 0x91 || command_buffer[1] == 0xA1 || command_buffer[1] == 0xB1 || command_buffer[1] == 0xC1 || command_buffer[1] == 0xD1 || command_buffer[1] == 0xE1 || command_buffer[1] == 0xF1)
             {
-                outcommand_buffer[1] = 0x11;
+                outbuffer[1] = 0x11;
             }
             if (command_buffer[1] == 0x12 || command_buffer[1] == 0x22 || command_buffer[1] == 0x32 || command_buffer[1] == 0x42 || command_buffer[1] == 0x52 || command_buffer[1] == 0x62 || command_buffer[1] == 0x72 || command_buffer[1] == 0x82 || command_buffer[1] == 0x92 || command_buffer[1] == 0xA2 || command_buffer[1] == 0xB2 || command_buffer[1] == 0xC2 || command_buffer[1] == 0xD2 || command_buffer[1] == 0xE2 || command_buffer[1] == 0xF2)
             {
-                outcommand_buffer[1] = 0x12;
+                outbuffer[1] = 0x12;
             }
       
-            outcommand_buffer[2] = command_buffer[2];
+            outbuffer[2] = command_buffer[2];
 
             midbuffer = calloc(SKYLANDER_BLOCK_SIZE, 1);
             if (midbuffer == NULL) {
@@ -379,7 +379,7 @@ portal_send_report((const uint8_t *)outbuffer, SKYLANDER_MSG_SIZE);
     }
 
     printf("Sent: ");
-    for (unsigned int i = 0; i < SKYLANDER_MSG_SIZE; i++) { printf("%02X", (unsigned char)outcommand_buffer[i]); }
+    for (unsigned int i = 0; i < SKYLANDER_MSG_SIZE; i++) { printf("%02X", (unsigned char)outbuffer[i]); }
     printf("\n");
     free(outbuffer);
   }
