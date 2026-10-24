@@ -68,6 +68,14 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 pico_enable_stdio_uart(${PROJECT_NAME} 1)
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 
+# Verbose HID logging is opt-in because serial printing inside USB callbacks
+# can add latency to real-time portal responses.
+option(PTPE_USB_DIAGNOSTICS "Enable verbose USB protocol logs on UART (may affect timing)" OFF)
+if(PTPE_USB_DIAGNOSTICS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PTPE_USB_DIAGNOSTICS=1)
+endif()
+
+
 pico_set_program_name(${PROJECT_NAME} "ptpe")
 pico_set_program_version(${PROJECT_NAME} "0.1")
 
