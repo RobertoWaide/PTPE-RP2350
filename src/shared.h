@@ -22,3 +22,4 @@ void reboot();
 extern unsigned char skylander_ram_dump[2048];
 extern unsigned int skylander_ram_dump_size;
 extern int skylander_ram_dump_active;
+extern volatile int web_sense_present;
