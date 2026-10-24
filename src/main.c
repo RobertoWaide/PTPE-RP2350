@@ -230,7 +230,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             if (outbuffer == NULL) return;
             outbuffer[0] = 0x52;
             outbuffer[1] = 0x02;
-            outbuffer[2] = 0x1b;
+            // Known Skylanders portal identification response: 52 02 0A 05 08.
+            outbuffer[2] = 0x0A;
+            outbuffer[3] = 0x05;
+            outbuffer[4] = 0x08;
             tud_hid_report(0, outbuffer, 32);
             break;
         case 'J':
