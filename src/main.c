@@ -300,7 +300,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             break;
         case 'C': // 0x42 Skylander Portal Color
             printf("Color ");
-            tud_hid_report(0, buffer, bufsize);
+            portal_send_report(command_buffer, command_len);
             return;
             // tud_hid_report(0, buffer, bufsize);
             break;
