@@ -14,7 +14,7 @@
 
 #define REQ_MAX 4096
 #define DUMP_MAX 2048
-#define RESP_MAX 1200
+#define RESP_MAX 4096
 
 typedef struct {
     uint8_t req[REQ_MAX];
