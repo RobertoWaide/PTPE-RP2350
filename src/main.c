@@ -1,5 +1,7 @@
 
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "hardware/spi.h"
@@ -30,6 +32,76 @@
 #define BUTTON_SELECT 18
 #define BUTTON_RIGHT 19
 #define BUTTON_MISC2 20
+
+/*
+ * USB tracing is available for UART debugging, but disabled by default:
+ * synchronous serial logging in every HID callback can delay portal replies.
+ */
+#ifndef PTPE_USB_DIAGNOSTICS
+#define PTPE_USB_DIAGNOSTICS 0
+#endif
+
+#if PTPE_USB_DIAGNOSTICS
+#define USB_DIAG(...) printf(__VA_ARGS__)
+#else
+#define USB_DIAG(...) ((void)0)
+#endif
+
+#define PORTAL_USB_REPORT_SIZE 32u
+#define PORTAL_REPORT_QUEUE_DEPTH 8u
+
+/*
+ * Xenia Canary's Traptanium implementation identifies reports as 32-byte
+ * frames beginning with 0B 14, followed by the portal payload.
+ */
+static uint8_t portal_report_cache[PORTAL_USB_REPORT_SIZE] = {0x0B, 0x14};
+static uint8_t portal_report_queue[PORTAL_REPORT_QUEUE_DEPTH][PORTAL_USB_REPORT_SIZE];
+static uint8_t portal_report_head = 0;
+static uint8_t portal_report_count = 0;
+static uint32_t portal_reports_dropped = 0;
+
+static void portal_flush_reports(void);
+static void portal_send_report(const uint8_t *payload, uint16_t payload_len);
+
+static void portal_send_report(const uint8_t *payload, uint16_t payload_len)
+{
+    uint8_t report[PORTAL_USB_REPORT_SIZE] = {0};
+    report[0] = 0x0B;
+    report[1] = 0x14;
+
+    if (payload != NULL && payload_len > 0) {
+        uint16_t max_payload = (uint16_t)(PORTAL_USB_REPORT_SIZE - 2u);
+        uint16_t copy_len = payload_len > max_payload ? max_payload : payload_len;
+        memcpy(report + 2, payload, copy_len);
+    }
+
+    if (portal_report_count >= PORTAL_REPORT_QUEUE_DEPTH) {
+        ++portal_reports_dropped;
+        USB_DIAG("USB: response queue full; dropped=%lu\n",
+                 (unsigned long)portal_reports_dropped);
+        return;
+    }
+
+    uint8_t tail = (uint8_t)((portal_report_head + portal_report_count) %
+                             PORTAL_REPORT_QUEUE_DEPTH);
+    memcpy(portal_report_queue[tail], report, sizeof(report));
+    memcpy(portal_report_cache, report, sizeof(report));
+    ++portal_report_count;
+}
+
+static void portal_flush_reports(void)
+{
+    while (portal_report_count > 0 && tud_hid_ready()) {
+        uint8_t *report = portal_report_queue[portal_report_head];
+        if (!tud_hid_report(0, report, PORTAL_USB_REPORT_SIZE)) {
+            break;
+        }
+
+        portal_report_head = (uint8_t)((portal_report_head + 1u) %
+                                       PORTAL_REPORT_QUEUE_DEPTH);
+        --portal_report_count;
+    }
+}
 
 void init_hw() {
        
@@ -140,6 +212,7 @@ int main() {
         printf("Erro ao inicializar o Wi-Fi CYW43.\n");
         while (true) {
             tud_task();
+            portal_flush_reports();
             tight_loop_contents();
         }
     }
@@ -150,6 +223,7 @@ int main() {
     // Mant??m a emula????o USB e o processamento de rede ativos.
     while (true) {
         tud_task();
+        portal_flush_reports();
         tight_loop_contents();
     }
 
@@ -163,13 +237,13 @@ int main() {
 // Invoked when device is mounted
 void tud_mount_cb(void)
 {
-  printf("USB: MOUNTED (DeviceNum=%d)\n", DeviceNum);
+  USB_DIAG("USB: MOUNTED (DeviceNum=%d)\n", DeviceNum);
 }
 
 // Invoked when device is unmounted
 void tud_umount_cb(void)
 {
-  printf("USB: UNMOUNTED (DeviceNum=%d)\n", DeviceNum);
+  USB_DIAG("USB: UNMOUNTED (DeviceNum=%d)\n", DeviceNum);
 }
 
 // Invoked when usb bus is suspended
@@ -190,43 +264,42 @@ void tud_resume_cb(void)
 // Return zero will cause the stack to STALL request
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen)
 {
-  (void)buffer;
-  printf("USB: GET_REPORT instance=%u id=0x%02X type=%u requested=%u\n",
-         instance, report_id, (unsigned)report_type, reqlen);
-  // Keep the existing behavior (STALL) until the portal protocol defines
-  // the correct control-transfer response; the log makes this visible.
-  return 0;
-}
+  /*
+   * There are no Report IDs or Feature reports in this descriptor. For an
+   * Input GET_REPORT, return the most recent complete portal frame rather
+   * than STALLing unconditionally. Keep unsupported request types explicit.
+   */
+  if (instance != 0 || report_id != 0 ||
+      report_type != HID_REPORT_TYPE_INPUT || buffer == NULL || reqlen == 0) {
+    USB_DIAG("USB: unsupported GET_REPORT instance=%u id=0x%02X type=%u len=%u\n",
+             instance, report_id, (unsigned)report_type, reqlen);
+    return 0;
+  }
 
-// Xbox 360 Traptanium reports wrap the portal payload in 0B 14.
-static void portal_send_report(const uint8_t *payload, uint16_t payload_len)
-{
-    uint8_t report[32] = {0};
-    report[0] = 0x0B;
-    report[1] = 0x14;
-    if (payload != NULL && payload_len > 0) {
-        uint16_t copy_len = payload_len > 30 ? 30 : payload_len;
-        memcpy(report + 2, payload, copy_len);
-    }
-    tud_hid_report(0, report, sizeof(report));
+  uint16_t copy_len = reqlen < PORTAL_USB_REPORT_SIZE
+      ? reqlen
+      : PORTAL_USB_REPORT_SIZE;
+  memcpy(buffer, portal_report_cache, copy_len);
+  USB_DIAG("USB: GET_REPORT input id=0 length=%u\n", copy_len);
+  return copy_len;
 }
 
 // Invoked when received SET_REPORT control request or
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) // Console/ Computer sends data (Query, Shutdown etc.)
 {
- printf("USB: SET_REPORT instance=%u id=0x%02X type=%u len=%u",
+ USB_DIAG("USB: SET_REPORT instance=%u id=0x%02X type=%u len=%u",
         instance, report_id, (unsigned)report_type, bufsize);
  if (buffer != NULL) {
    unsigned int dump_len = bufsize < 32 ? bufsize : 32;
-   for (unsigned int i = 0; i < dump_len; i++) printf(" %02X", buffer[i]);
+   for (unsigned int i = 0; i < dump_len; i++) USB_DIAG(" %02X", buffer[i]);
  }
- printf("\n");
+ USB_DIAG("\n");
  if (report_type == HID_REPORT_TYPE_OUTPUT && (buffer == NULL || bufsize < 1)) {
-     printf("USB: pacote OUTPUT invalido\n");
+     USB_DIAG("USB: pacote OUTPUT invalido\n");
      return;
  }
- printf("%X", report_type);
+ USB_DIAG("%X", report_type);
  if (report_type == HID_REPORT_TYPE_OUTPUT)
   {
     const uint8_t *command_buffer = buffer;
@@ -244,7 +317,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     switch (command_buffer[0]) // Commands we can recieve from the host
     {
         case 'R': // 0x52 Reboot/Shutdown Portal
-            printf("Recieved reboot\n");
+            USB_DIAG("Recieved reboot\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
             outbuffer[0] = 0x52;
@@ -255,14 +328,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'J':
-            printf("I do not know what it does but something related to sound");
+            USB_DIAG("I do not know what it does but something related to sound");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
             outbuffer[0] = command_buffer[0];
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'M':
-            printf("Activate / Deactivate speaker");
+            USB_DIAG("Activate / Deactivate speaker");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
             outbuffer[0] = command_buffer[0]; // We only send the command back without any return value, since we do not have a speaker
@@ -271,7 +344,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
         case 'A': // 0x41 Activate Portal
             if (command_len < 2) return;
 
-            printf("Recieved activate\n");
+            USB_DIAG("Recieved activate\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
             outbuffer[0] = 0x41;
@@ -281,7 +354,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             portal_send_report((const uint8_t *)outbuffer, 32);
             break;
         case 'S': // 0x53 Sense how many Skylanders are on the Portal
-            printf("Recieved sense\n");
+            USB_DIAG("Recieved sense\n");
             outbuffer = calloc(32, 1);
             if (outbuffer == NULL) return;
             outbuffer[0] = 0x53;
@@ -299,14 +372,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             // free(outbuffer);
             break;
         case 'C': // 0x42 Skylander Portal Color
-            printf("Color ");
+            USB_DIAG("Color ");
             portal_send_report(command_buffer, command_len);
             return;
             // tud_hid_report(0, buffer, bufsize);
             break;
         case 'Q': // 0x51 Read Blocks (16 Bytes) From Skylander
             if (command_len < 3) return;
-            printf("Recieved query\n");
+            USB_DIAG("Recieved query\n");
             outbuffer = calloc(SKYLANDER_MSG_SIZE, 1);
             if (outbuffer == NULL) { return; }
             outbuffer[0] = 0x51;
@@ -378,9 +451,9 @@ portal_send_report((const uint8_t *)outbuffer, SKYLANDER_MSG_SIZE);
             return;
     }
 
-    printf("Sent: ");
-    for (unsigned int i = 0; i < SKYLANDER_MSG_SIZE; i++) { printf("%02X", (unsigned char)outbuffer[i]); }
-    printf("\n");
+    USB_DIAG("Sent: ");
+    for (unsigned int i = 0; i < SKYLANDER_MSG_SIZE; i++) { USB_DIAG("%02X", (unsigned char)outbuffer[i]); }
+    USB_DIAG("\n");
     free(outbuffer);
   }
   
