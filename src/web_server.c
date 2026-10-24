@@ -14,12 +14,15 @@
 
 #define REQ_MAX 4096
 #define DUMP_MAX 2048
-#define RESP_MAX 1200
+#define RESP_MAX 4096
 
 typedef struct {
     uint8_t req[REQ_MAX];
     size_t used, header_end, body_len;
     bool has_len, bad, responded;
+    unsigned char action; /* 0=root/upload, 1=sense on, 2=sense off, 3=status */
+    uint8_t response[RESP_MAX];
+    size_t response_len, response_queued;
 } http_client_t;
 
 static dhcp_server_t dhcp;
@@ -28,10 +31,11 @@ static struct tcp_pcb *listener;
 static const char page[] =
 "<!doctype html><html lang='pt-BR'><meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>PTPE Skylanders</title><style>body{font:16px system-ui;max-width:600px;margin:2em auto;padding:0 1em;background:#101522;color:#eee}button{padding:12px;background:#54d6a0;border:0;border-radius:8px}input{margin:1em 0}#s{white-space:pre-wrap}</style>"
-"<h1>PTPE Skylanders</h1><p>Choose a .bin dump (up to 2048 bytes).</p>"
-"<input id=f type=file accept='.bin'><br><button id=b>Enviar e ativar</button><p id=s>Waiting for a file.</p>"
-"<script>let f=document.querySelector('#f'),s=document.querySelector('#s');document.querySelector('#b').onclick=async()=>{let x=f.files[0];if(!x){s.textContent='Choose a file.';return}if(!x.size||x.size>2048||x.size%16!==0){s.textContent='Invalid size.';return}s.textContent='Uploading...';try{let r=await fetch('/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:x});s.textContent=await r.text()}catch(e){s.textContent='Failed: '+e}}</script>";
+"<title>PTPE Skylanders</title><style>body{font:16px system-ui;max-width:680px;margin:2em auto;padding:0 1em;background:#101522;color:#eee}button{padding:12px 15px;background:#54d6a0;border:0;border-radius:8px;margin:4px;font-weight:600}button.secondary{background:#38445c;color:#fff}input{margin:1em 0}#s{white-space:pre-wrap;background:#1b2435;border-radius:8px;padding:12px}.group{border:1px solid #354158;border-radius:12px;padding:14px;margin:14px 0}small{color:#aebbd0}</style>"
+"<h1>PTPE Skylanders</h1><p>Portal virtual e carregamento de dump para o Pico 2 W.</p>"
+"<section class='group'><h2>Controles virtuais</h2><p>Simula a presença de um Skylander na resposta Sense do portal.</p><button id=on>Simular Skylander presente</button><button class=secondary id=off>Remover Skylander</button><button class=secondary id=status>Atualizar status</button></section>"
+"<section class='group'><h2>Carregar Skylander</h2><p>Selecione um dump .bin (16 a 2048 bytes; tamanho múltiplo de 16).</p><input id=f type=file accept='.bin'><br><button id=b>Enviar dump</button></section><p id=s>Pronto. Conecte-se ao Wi-Fi PTPE-Skylanders e abra 192.168.4.1.</p>"
+"<script>let f=document.querySelector('#f'),s=document.querySelector('#s');async function action(path){s.textContent='Enviando comando...';try{let r=await fetch(path,{cache:'no-store'});s.textContent=await r.text()}catch(e){s.textContent='Falha: '+e}}document.querySelector('#on').onclick=()=>action('/sense/on');document.querySelector('#off').onclick=()=>action('/sense/off');document.querySelector('#status').onclick=()=>action('/status');document.querySelector('#b').onclick=async()=>{let x=f.files[0];if(!x){s.textContent='Selecione um arquivo .bin.';return}if(!x.size||x.size>2048||x.size%16!==0){s.textContent='Tamanho inválido: use 16–2048 bytes, múltiplo de 16.';return}s.textContent='Enviando dump...';try{let r=await fetch('/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:x});s.textContent=await r.text()}catch(e){s.textContent='Falha: '+e}}</script>";
 
 static void cleanup(struct tcp_pcb *pcb, http_client_t *c, bool abort_conn) {
     if (pcb) {
@@ -46,33 +50,81 @@ static void cleanup(struct tcp_pcb *pcb, http_client_t *c, bool abort_conn) {
     if (c) free(c);
 }
 
+static err_t flush_response(struct tcp_pcb *pcb, http_client_t *c) {
+    while (c->response_queued < c->response_len) {
+        u16_t available = tcp_sndbuf(pcb);
+        if (available == 0) break;
+        size_t remaining = c->response_len - c->response_queued;
+        size_t chunk = remaining;
+        if (chunk > available) chunk = available;
+        if (chunk > 1024) chunk = 1024;
+
+        err_t e = tcp_write(pcb, c->response + c->response_queued,
+                            (u16_t)chunk, TCP_WRITE_FLAG_COPY);
+        if (e == ERR_MEM) break; /* tcp_sent_cb retries when ACKs free space */
+        if (e != ERR_OK) return e;
+        c->response_queued += chunk;
+    }
+
+    err_t out = tcp_output(pcb);
+    if (out != ERR_OK && out != ERR_MEM) return out;
+
+    if (c->response_queued == c->response_len) {
+        /* All bytes are queued; TCP will transmit them before FIN. */
+        tcp_arg(pcb, NULL);
+        tcp_recv(pcb, NULL);
+        tcp_sent(pcb, NULL);
+        tcp_poll(pcb, NULL, 0);
+        tcp_err(pcb, NULL);
+        err_t e = tcp_close(pcb);
+        if (e != ERR_OK) {
+            tcp_abort(pcb);
+        }
+        free(c);
+    }
+    return ERR_OK;
+}
+
+static err_t sent_http(void *arg, struct tcp_pcb *pcb, u16_t len) {
+    (void)len;
+    http_client_t *c = (http_client_t *)arg;
+    if (!c) return ERR_OK;
+    err_t e = flush_response(pcb, c);
+    if (e != ERR_OK) {
+        cleanup(pcb, c, true);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
+}
+
+static err_t poll_http(void *arg, struct tcp_pcb *pcb) {
+    http_client_t *c = (http_client_t *)arg;
+    if (!c) return ERR_OK;
+    err_t e = flush_response(pcb, c);
+    if (e != ERR_OK) {
+        cleanup(pcb, c, true);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
+}
+
 static err_t respond(struct tcp_pcb *pcb, http_client_t *c,
                      const char *status, const char *type,
                      const void *body, size_t body_len) {
-    uint8_t out[RESP_MAX];
-    int h = snprintf((char *)out, sizeof(out),
+    int h = snprintf((char *)c->response, sizeof(c->response),
         "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
         "Connection: close\r\nCache-Control: no-store\r\n\r\n",
         status, type, (unsigned long)body_len);
-    if (h < 0 || (size_t)h >= sizeof(out) ||
-        body_len > sizeof(out) - (size_t)h) return ERR_VAL;
-    if (body_len && body) memcpy(out + h, body, body_len);
+    if (h < 0 || (size_t)h >= sizeof(c->response) ||
+        body_len > sizeof(c->response) - (size_t)h) return ERR_VAL;
+    if (body_len && body) memcpy(c->response + h, body, body_len);
+    c->response_len = (size_t)h + body_len;
+    c->response_queued = 0;
+    c->responded = true;
 
-    err_t e = tcp_write(pcb, out, (u16_t)((size_t)h + body_len), TCP_WRITE_FLAG_COPY);
-    if (e != ERR_OK) return e;
-    e = tcp_output(pcb);
-    if (e != ERR_OK && e != ERR_MEM) return e;
-
-    /* Responses are small and queued before closing. */
-    tcp_arg(pcb, NULL);
-    tcp_recv(pcb, NULL);
-    tcp_sent(pcb, NULL);
-    tcp_poll(pcb, NULL, 0);
-    tcp_err(pcb, NULL);
-    e = tcp_close(pcb);
-    if (e != ERR_OK) tcp_abort(pcb);
-    free(c);
-    return ERR_OK;
+    tcp_sent(pcb, sent_http);
+    tcp_poll(pcb, poll_http, 2);
+    return flush_response(pcb, c);
 }
 
 static bool eq_ci(const char *a, size_t n, const char *b) {
@@ -89,8 +141,15 @@ static void parse_request(http_client_t *c) {
     if (!line_end) { c->bad = true; return; }
     size_t req_len = (size_t)(line_end - s);
     bool get_root = req_len >= 6 && memcmp(s, "GET / ", 6) == 0;
+    bool get_sense_on = req_len >= 14 && memcmp(s, "GET /sense/on ", 14) == 0;
+    bool get_sense_off = req_len >= 15 && memcmp(s, "GET /sense/off ", 15) == 0;
+    bool get_status = req_len >= 12 && memcmp(s, "GET /status ", 12) == 0;
     bool post_upload = req_len >= 13 && memcmp(s, "POST /upload ", 13) == 0;
-    if (get_root) { c->body_len = (size_t)-1; return; }
+    if (get_root || get_sense_on || get_sense_off || get_status) {
+        c->body_len = (size_t)-1;
+        c->action = get_sense_on ? 1 : get_sense_off ? 2 : get_status ? 3 : 0;
+        return;
+    }
     if (!post_upload) { c->bad = true; return; }
 
     char *line = line_end + 2;
@@ -164,8 +223,24 @@ static err_t recv_http(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err
             return ERR_OK;
         }
         if (c->body_len == (size_t)-1) {
-            if (respond(pcb, c, "200 OK", "text/html; charset=utf-8", page, sizeof(page)-1) != ERR_OK)
-                cleanup(pcb, c, true);
+            if (c->action == 1) {
+                web_sense_present = 1;
+                static const char msg[] = "OK: Sense virtual ativado; o proximo comando S do Xbox recebera bitmask 0x01.";
+                if (respond(pcb, c, "200 OK", "text/plain; charset=utf-8", msg, sizeof(msg)-1) != ERR_OK) cleanup(pcb, c, true);
+            } else if (c->action == 2) {
+                web_sense_present = 0;
+                static const char msg[] = "OK: Sense virtual desativado.";
+                if (respond(pcb, c, "200 OK", "text/plain; charset=utf-8", msg, sizeof(msg)-1) != ERR_OK) cleanup(pcb, c, true);
+            } else if (c->action == 3) {
+                char msg[128];
+                int n = snprintf(msg, sizeof(msg), "PTPE status\\nSense virtual: %s\\nDump RAM: %s (%u bytes)", web_sense_present ? "PRESENTE" : "ausente", skylander_ram_dump_active ? "ativo" : "inativo", skylander_ram_dump_size);
+                if (n < 0) n = 0;
+                if ((size_t)n >= sizeof(msg)) n = (int)sizeof(msg)-1;
+                if (respond(pcb, c, "200 OK", "text/plain; charset=utf-8", msg, (size_t)n) != ERR_OK) cleanup(pcb, c, true);
+            } else {
+                if (respond(pcb, c, "200 OK", "text/html; charset=utf-8", page, sizeof(page)-1) != ERR_OK)
+                    cleanup(pcb, c, true);
+            }
             return ERR_OK;
         }
     }
